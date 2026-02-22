@@ -1,0 +1,47 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  //url      = env("DATABASE_URL")
+}
+
+// プロジェクト管理
+model Project {
+  id        Int      @id @default(autoincrement())
+  name      String
+  parts     Part[]
+  createdAt DateTime @default(now())
+}
+
+// STLファイル（設計）の管理
+model Part {
+  id          Int        @id @default(autoincrement())
+  partNumber  String     @map("part_number")
+  stlUrl      String     @map("stl_url") // Firebase Storageのパス
+  projectId   Int        @map("project_id")
+  project     Project    @relation(fields: [projectId], references: [id])
+  items       PartItem[]
+  createdAt   DateTime   @default(now())
+}
+
+// 個々の製造部品と保管場所の管理
+model PartItem {
+  id           Int      @id @default(autoincrement())
+  partId       Int      @map("part_id")
+  part         Part     @relation(fields: [partId], references: [id])
+  boxId        Int?     @unique @map("box_id") // 1つの箱には1つのアイテム（一意性制約）
+  box          Box?     @relation(fields: [boxId], references: [id])
+  serialNumber String   @map("serial_number")
+  status       String   @default("PENDING") // PENDING, PRINTING, FINISHED, etc.
+  updatedAt    DateTime @updatedAt
+}
+
+// 物理的なボックス
+model Box {
+  id          Int       @id @default(autoincrement())
+  boxCode     String    @unique @map("box_code") // BOX-001など
+  isOccupied  Boolean   @default(false) @map("is_occupied")
+  partItem    PartItem?
+}
