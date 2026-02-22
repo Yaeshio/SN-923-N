@@ -11,7 +11,17 @@ datasource db {
 model Project {
   id        Int      @id @default(autoincrement())
   name      String
-  parts     Part[]
+  units     Unit[]   // Project -> Unit (1:N)
+  createdAt DateTime @default(now())
+}
+
+// ユニット（アセンブリ/子構成）
+model Unit {
+  id        Int      @id @default(autoincrement())
+  name      String   // 例: "メインフレーム", "駆動部", "外装ユニット"
+  projectId Int      @map("project_id")
+  project   Project  @relation(fields: [projectId], references: [id])
+  parts     Part[]   // Unit -> Part (1:N)
   createdAt DateTime @default(now())
 }
 
@@ -19,9 +29,9 @@ model Project {
 model Part {
   id          Int        @id @default(autoincrement())
   partNumber  String     @map("part_number")
-  stlUrl      String     @map("stl_url") // Firebase Storageのパス
-  projectId   Int        @map("project_id")
-  project     Project    @relation(fields: [projectId], references: [id])
+  stlUrl      String     @map("stl_url")
+  unitId      Int        @map("unit_id") // ProjectIdの代わりにUnitIdを持つ
+  unit        Unit       @relation(fields: [unitId], references: [id])
   items       PartItem[]
   createdAt   DateTime   @default(now())
 }
