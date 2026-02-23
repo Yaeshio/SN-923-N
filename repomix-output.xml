@@ -40,66 +40,499 @@ The content is organized as follows:
 </file_summary>
 
 <directory_structure>
+app/
+  item/
+    [id]/
+      page.tsx
+lib/
+  mockStore.ts
 prisma/
   schema.prisma
+src/
+  actions/
+    __tests__/
+      updatePartItemStatus.test.ts
+    update-status.ts
+  lib/
+    db.ts
+tests/
+  helpers/
+    prisma-mock.ts
 .gitignore
 docker-compose.yml
 package.json
 prisma.config.ts
 README.md
+tsconfig.json
+vitest.config.ts
 </directory_structure>
 
 <files>
 This section contains the contents of the repository's files.
 
-<file path="prisma/schema.prisma">
-generator client {
-  provider = "prisma-client-js"
+<file path="app/item/[id]/page.tsx">
+'use client';
+
+import { PROCESSES } from '@/app/constants';
+import Link from 'next/link';
+import { useOptimistic, useState, useTransition } from 'react';
+import { updatePartItemStatus } from '@/src/actions/update-status';
+import { PartItem, Part } from '@prisma/client'; // Prisma から PartItem と Part をインポート
+import prisma from '@/lib/db'; // 新しく作成したPrismaクライアントをインポート
+
+interface ItemPageProps {
+  params: {
+    id: string;
+  };
 }
 
-datasource db {
-  provider = "postgresql"
-  //url      = env("DATABASE_URL")
+// サーバー側でデータを取得し、クライアントコンポーネントに渡すラッパー
+export async function generateStaticParams() {
+  const allItems = await prisma.partItem.findMany({
+    select: { id: true },
+  });
+  return allItems.map(item => ({
+    id: String(item.id), // id が number なので string に変換して params に渡す
+  }));
 }
 
-// プロジェクト管理
-model Project {
-  id        Int      @id @default(autoincrement())
-  name      String
-  parts     Part[]
-  createdAt DateTime @default(now())
+export default function ItemPageClient({ data, projectId }: { data: (PartItem & { part: Part }), projectId: string }) { // parts を part に変更
+  const [optimisticStatus, setOptimisticStatus] = useOptimistic(
+    data.status,
+    (state, newStatus: string) => newStatus // ProcessStatus ではなく string を使用
+  );
+  const [isPending, startTransition] = useTransition();
+  const [defectReason, setDefectReason] = useState('');
+
+  const handleUpdateStatus = async (newStatus: string) => { // ProcessStatus ではなく string を使用
+    startTransition(async () => {
+      setOptimisticStatus(newStatus);
+      try {
+        await updatePartItemStatus(data.id, newStatus);
+        // 成功した場合、optimisticState が確定される。サーバー側で再検証も行われる。
+      } catch (error) {
+        console.error('Failed to update status:', error);
+        alert('ステータスの更新に失敗しました。');
+        // エラー時は元の状態に戻すなどのリカバリー処理を検討
+        setOptimisticStatus(data.status); // ロールバック
+      }
+    });
+  };
+
+  const handleReportDefect = async () => {
+    if (!defectReason) {
+      alert('不良理由を入力してください。');
+      return;
+    }
+    startTransition(async () => {
+      setOptimisticStatus('DEFECTIVE'); // 不良報告なのでDEFECTIVEに設定
+      try {
+        // updatePartItemStatus を呼び出し、必要に応じて別の不良報告アクションと連携
+        await updatePartItemStatus(data.id, 'DEFECTIVE');
+        // TODO: 不良報告時に新しいジョブを生成するロジックをここに追加または別のServer Actionで処理
+        alert('不良を報告し、ステータスを更新しました。');
+        setDefectReason('');
+      } catch (error) {
+        console.error('Failed to report defect:', error);
+        alert('不良報告に失敗しました。');
+        setOptimisticStatus(data.status); // ロールバック
+      }
+    });
+  };
+
+  return (
+    <div className="p-8 max-w-2xl mx-auto bg-white shadow-lg rounded-xl mt-10 border border-gray-100">
+      <Link href={`/project/${projectId}`} className="text-sm text-blue-600 hover:underline mb-6 inline-block font-bold">
+        ← プロジェクト進捗に戻る
+      </Link>
+
+      <div className="flex justify-between items-start mb-6">
+        <h1 className="text-3xl font-black text-gray-900">{data.part.partNumber}</h1> {/* parts.part_number を part.partNumber に変更 */}
+        <span className={`px-3 py-1 rounded-full text-xs font-bold ${optimisticStatus === 'DEFECTIVE' ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'}`}>
+          ID: {data.id}
+        </span>
+      </div>
+
+      {/* ステータス表示 */}
+      <div className={`p-4 rounded-lg mb-8 border ${optimisticStatus === 'DEFECTIVE' ? 'bg-red-50 border-red-200' : 'bg-blue-50 border-blue-100'}`}>
+        <p className="text-sm font-bold text-gray-500 uppercase tracking-wider">Current Status</p>
+        <p className={`text-2xl font-black ${optimisticStatus === 'DEFECTIVE' ? 'text-red-700' : 'text-blue-800'}`}>
+          {PROCESSES.find(p => p.key === optimisticStatus)?.name || optimisticStatus}
+        </p>
+      </div>
+
+      <div className="space-y-10">
+        {/* 1. 通常の工程更新 */}
+        <section>
+          <h2 className="text-sm font-bold text-gray-400 uppercase mb-3">工程を進める</h2>
+          <form onSubmit={(e) => {
+            e.preventDefault();
+            const formData = new FormData(e.currentTarget);
+            const next = formData.get('next') as string; // ProcessStatus ではなく string を使用
+            handleUpdateStatus(next);
+          }} className="flex gap-2">
+            <select name="next" value={optimisticStatus} onChange={(e) => { /* use optimistic for display, action handles update */ }} className="flex-1 p-3 border rounded-lg font-bold" disabled={isPending}>
+              {PROCESSES.map(proc => <option key={proc.key} value={proc.key}>{proc.name}</option>)}
+            </select>
+            <button type="submit" className="bg-gray-800 text-white px-6 py-3 rounded-lg font-bold hover:bg-black transition-colors" disabled={isPending}>
+              {isPending ? '更新中...' : '更新'}
+            </button>
+          </form>
+        </section>
+
+        {/* 2. 不良報告セクション */}
+        {optimisticStatus !== 'DEFECTIVE' && (
+          <section className="p-6 border-2 border-red-200 rounded-2xl bg-red-50/50">
+            <h2 className="text-lg font-black text-red-700 mb-2 flex items-center gap-2">
+              ⚠️ 不良・再製作の報告
+            </h2>
+            <p className="text-sm text-red-600 mb-4 font-medium">
+              この個体に欠陥がある場合、ここで報告します。この個体は「不良」として記録されます。
+            </p>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              handleReportDefect();
+            }} className="space-y-3">
+              <input
+                name="reason"
+                value={defectReason}
+                onChange={(e) => setDefectReason(e.target.value)}
+                placeholder="不良理由（例：積層剥離、寸法誤差）"
+                className="w-full p-3 border-2 border-red-100 rounded-xl focus:border-red-500 outline-none bg-white font-medium"
+                required
+                disabled={isPending}
+              />
+              <button type="submit" className={`w-full bg-red-600 text-white font-black py-4 rounded-xl hover:bg-red-700 transition-all shadow-lg active:scale-[0.98] ${isPending || !defectReason ? 'opacity-50 cursor-not-allowed' : ''}`} disabled={isPending || !defectReason}>
+                {isPending ? '処理中...' : '不良を確定'}
+              </button>
+            </form>
+          </section>
+        )}
+
+        {/* 3. 完了処理 */}
+        <section>
+          <form onSubmit={(e) => {
+            e.preventDefault();
+            handleUpdateStatus('ASSEMBLED');
+          }}>
+            <button type="submit" className="w-full border-2 border-green-600 text-green-600 font-black py-4 rounded-xl hover:bg-green-50 transition-colors" disabled={isPending}>
+              {isPending ? '処理中...' : '組み込み完了（ストックから除外）'}
+            </button>
+          </form>
+        </section>
+      </div>
+    </div>
+  );
 }
 
-// STLファイル（設計）の管理
-model Part {
-  id          Int        @id @default(autoincrement())
-  partNumber  String     @map("part_number")
-  stlUrl      String     @map("stl_url") // Firebase Storageのパス
-  projectId   Int        @map("project_id")
-  project     Project    @relation(fields: [projectId], references: [id])
-  items       PartItem[]
-  createdAt   DateTime   @default(now())
+export async function ItemPage(props: ItemPageProps) {
+  const { id } = props.params;
+  const data = await prisma.partItem.findUnique({
+    where: { id: parseInt(id, 10) },
+    include: { part: true },
+  });
+  
+  if (!data) {
+    return <div className="p-8">アイテムが見つかりませんでした</div>;
+  }
+
+  // Part の unitId が projectId に対応
+  const projectId = String(data.part.unitId); // Part.unitId は Int なので String に変換
+
+  return <ItemPageClient data={data} projectId={projectId} />;
+}
+</file>
+
+<file path="lib/mockStore.ts">
+import { Project, ProcessStatus, Unit } from '@/app/types'; // PartItem のインポートを削除
+import { PartItem, Part } from '@prisma/client'; // Prisma から PartItem と Part をインポート
+import { db } from '@/src/shared/lib/firebase';
+import {
+    collection,
+    getDocs,
+    doc,
+    getDoc,
+    updateDoc,
+    setDoc,
+    addDoc,
+    query,
+    where,
+    Timestamp,
+    serverTimestamp
+} from 'firebase/firestore';
+
+// Firestoreのデータコンバーター（Date型の復元など）
+const dateConverter = (data: any): any => {
+    if (!data) return data;
+    const result = { ...data };
+    // completed_atなどのTimestampをDateに戻す
+    Object.keys(result).forEach(key => {
+        if (result[key] instanceof Timestamp) {
+            result[key] = result[key].toDate();
+        }
+    });
+    return result;
+};
+
+export const mockStore = {
+    getProjects: async (): Promise<Project[]> => {
+        const snapshot = await getDocs(collection(db, 'projects'));
+        return snapshot.docs.map(doc => ({
+            id: doc.id,
+            ...dateConverter(doc.data())
+        })) as Project[];
+    },
+
+    getProject: async (id: string): Promise<Project | null> => {
+        const docRef = doc(db, 'projects', id);
+        const span = await getDoc(docRef);
+        if (!span.exists()) return null;
+        return { id: span.id, ...dateConverter(span.data()) } as Project;
+    },
+
+    getUnitsByProject: async (projectId: string): Promise<Unit[]> => {
+        const q = query(collection(db, 'units'), where('project_id', '==', projectId));
+        const snapshot = await getDocs(q);
+        return snapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+        })) as Unit[];
+    },
+
+    addUnit: async (projectId: string, name: string): Promise<Unit> => {
+        const docRef = await addDoc(collection(db, 'units'), {
+            project_id: projectId,
+            name: name,
+            description: ''
+        });
+        return {
+            id: docRef.id,
+            project_id: projectId,
+            name: name
+        } as Unit;
+    },
+
+    assignPartToUnit: async (partId: string, unitId: string | null): Promise<void> => {
+        const docRef = doc(db, 'parts', partId);
+        await updateDoc(docRef, {
+            unit_id: unitId
+        });
+    },
+
+    getParts: async (projectId?: string): Promise<Part[]> => {
+        let q;
+        if (projectId) {
+            q = query(collection(db, 'parts'), where('project_id', '==', projectId));
+        } else {
+            q = collection(db, 'parts');
+        }
+        const snapshot = await getDocs(q);
+        return snapshot.docs.map(doc => ({
+            id: parseInt(doc.id), // id を number に変換
+            ...dateConverter(doc.data())
+        })) as Part[];
+    },
+
+    getPartItems: async (projectId?: string): Promise<PartItem[]> => {
+        // プロジェクトID指定がある場合、まず対象のPartを取得
+        let targetPartIds: number[] | null = null; // string から number に変更
+        if (projectId) {
+            const parts = await mockStore.getParts(projectId);
+            targetPartIds = parts.map(p => p.id); // id は number
+            if (targetPartIds.length === 0) return [];
+        }
+
+        const snapshot = await getDocs(collection(db, 'partItems'));
+        const items = snapshot.docs.map(doc => ({
+            id: parseInt(doc.id), // id を number に変換
+            ...dateConverter(doc.data())
+        })) as PartItem[];
+
+        if (targetPartIds) {
+            return items.filter(item => targetPartIds!.includes(item.partId)); // part_id を partId に変更
+        }
+        return items;
+    },
+
+    getPartItem: async (id: number): Promise<(PartItem & { part: Part }) | null> => { // id を number に変更, parts を part に変更
+        const itemRef = doc(db, 'partItems', String(id)); // Firestore は ID を string で扱うため変換
+        const itemSnap = await getDoc(itemRef);
+
+        if (!itemSnap.exists()) return null;
+        const itemData = { id: parseInt(itemSnap.id), ...dateConverter(itemSnap.data()) } as PartItem; // id を number に変換
+
+        // 関連するPartを取得 (Prisma の Part.id も Int のため、id を number として渡す)
+        const partRef = doc(db, 'parts', String(itemData.partId)); // part_id を partId に変更, String(id) に変換
+        const partSnap = await getDoc(partRef);
+
+        if (!partSnap.exists()) {
+            throw new Error(`Part not found for item ${id}`);
+        }
+        const partData = { id: parseInt(partSnap.id), ...dateConverter(partSnap.data()) } as Part; // id を number に変換
+
+        return { ...itemData, part: partData }; // parts を part に変更
+    },
+
+    updatePartItem: async (id: number, updates: Partial<PartItem>): Promise<void> => { // id を number に変更
+        const docRef = doc(db, 'partItems', String(id)); // Firestore は ID を string で扱うため変換
+        await updateDoc(docRef, updates);
+    },
+
+    updatePartItemStatus: async (id: number, newStatus: string): Promise<void> => { // id を number に変更
+        const docRef = doc(db, 'partItems', String(id)); // Firestore は ID を string で扱うため変換
+        await updateDoc(docRef, {
+            status: newStatus,
+            updatedAt: serverTimestamp() // updated_at を updatedAt に変更
+        });
+    },
+
+    addPartItem: async (item: Omit<PartItem, 'id' | 'createdAt' | 'updatedAt'>): Promise<PartItem> => { // createdAt と updatedAt を追加
+        const docRef = await addDoc(collection(db, 'partItems'), item);
+        return {
+            id: parseInt(docRef.id), // id を number に変換
+            createdAt: new Date(), // 仮の値
+            updatedAt: new Date(), // 仮の値
+            ...item
+        } as PartItem;
+    },
+
+};
+</file>
+
+<file path="src/lib/db.ts">
+import { PrismaClient } from '@prisma/client';
+
+const prismaClientSingleton = () => {
+  return new PrismaClient();
+};
+
+declare global {
+  var prismaGlobal: undefined | ReturnType<typeof prismaClientSingleton>;
 }
 
-// 個々の製造部品と保管場所の管理
-model PartItem {
-  id           Int      @id @default(autoincrement())
-  partId       Int      @map("part_id")
-  part         Part     @relation(fields: [partId], references: [id])
-  boxId        Int?     @unique @map("box_id") // 1つの箱には1つのアイテム（一意性制約）
-  box          Box?     @relation(fields: [boxId], references: [id])
-  serialNumber String   @map("serial_number")
-  status       String   @default("PENDING") // PENDING, PRINTING, FINISHED, etc.
-  updatedAt    DateTime @updatedAt
-}
+const prisma = globalThis.prismaGlobal ?? prismaClientSingleton();
 
-// 物理的なボックス
-model Box {
-  id          Int       @id @default(autoincrement())
-  boxCode     String    @unique @map("box_code") // BOX-001など
-  isOccupied  Boolean   @default(false) @map("is_occupied")
-  partItem    PartItem?
+export default prisma;
+
+if (process.env.NODE_ENV !== 'production') {
+  globalThis.prismaGlobal = prisma;
 }
+</file>
+
+<file path="src/actions/__tests__/updatePartItemStatus.test.ts">
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { prismaMock } from '../../../tests/helpers/prisma-mock';
+
+// @/lib/db をモック化
+vi.mock('@/lib/db', () => ({
+  __esModule: true,
+  default: prismaMock,
+}));
+
+import { updatePartItemStatus } from '../update-status';
+
+describe('updatePartItemStatus', () => {
+  beforeEach(() => {
+    // 各テストの前にモックをリセット
+    vi.clearAllMocks();
+  });
+
+  it('有効なpartItemIdとnewStatusを渡すと、DBが更新されること', async () => {
+    const partItemId = 1; // number に変更
+    const newStatus = 'PRINTING';
+
+    const mockPartItem = {
+      id: partItemId,
+      status: newStatus,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      partId: 1, // number に変更
+      boxId: null, // 追加
+      serialNumber: 'SN-001', // 追加
+    };
+
+    prismaMock.partItem.findUnique.mockResolvedValue(mockPartItem);
+    prismaMock.partItem.update.mockResolvedValue(mockPartItem);
+
+    await updatePartItemStatus(partItemId, newStatus);
+
+    expect(prismaMock.partItem.update).toHaveBeenCalledWith({
+      where: { id: partItemId },
+      data: { status: newStatus },
+    });
+  });
+
+  it('存在しないpartItemIdの場合はエラーを投げること', async () => {
+    const partItemId = 999; // number に変更
+    const newStatus = 'DELIVERED';
+
+    prismaMock.partItem.findUnique.mockResolvedValue(null);
+
+    await expect(
+      updatePartItemStatus(partItemId, newStatus)
+    ).rejects.toThrow('PartItem not found');
+  });
+});
+</file>
+
+<file path="src/actions/update-status.ts">
+import prisma from '@/lib/db';
+import { PrismaClient } from '@prisma/client';
+
+export async function updatePartItemStatus(
+  partItemId: number,
+  newStatus: string,
+  client?: PrismaClient // Remove this if not used for testing or specific transactions
+) {
+  const dbClient = client || prisma; // Use shared prisma instance
+
+  try {
+    const updatedPartItem = await dbClient.$transaction(async (tx) => {
+      const existingPartItem = await tx.partItem.findUnique({
+        where: { id: partItemId },
+      });
+
+      if (!existingPartItem) {
+        throw new Error('PartItem not found');
+      }
+
+      const updated = await tx.partItem.update({
+        where: { id: partItemId },
+        data: { status: newStatus },
+      });
+
+      // Removed statusHistory.create as StatusHistory model does not exist.
+
+      return updated;
+    });
+    return updatedPartItem;
+  } catch (error) {
+    console.error('Failed to update PartItem status:', error);
+    throw error; // エラーを再スローして呼び出し元に伝える
+  }
+}
+</file>
+
+<file path="tests/helpers/prisma-mock.ts">
+import { beforeEach } from 'vitest'
+import { mockDeep, mockReset } from 'vitest-mock-extended'
+import type { PrismaClient } from '@prisma/client'
+
+// モックPrismaクライアントを定義
+export const prismaMock = mockDeep<PrismaClient>()
+
+// $transactionをモック実装：コールバック関数にトランザクションコンテキストを渡す
+prismaMock.$transaction.mockImplementation((cb: any) => {
+  return Promise.resolve(typeof cb === 'function' ? cb(prismaMock) : cb)
+})
+
+beforeEach(() => {
+  mockReset(prismaMock)
+  // リセット後、$transactionの実装を再度設定
+  prismaMock.$transaction.mockImplementation((cb: any) => {
+    return Promise.resolve(typeof cb === 'function' ? cb(prismaMock) : cb)
+  })
+})
 </file>
 
 <file path=".gitignore">
@@ -145,19 +578,6 @@ services:
       - "5432:5432"
 </file>
 
-<file path="package.json">
-{
-  "dependencies": {
-    "@neondatabase/serverless": "^1.0.2",
-    "@prisma/client": "^7.4.1",
-    "@prisma/config": "^7.4.1"
-  },
-  "devDependencies": {
-    "prisma": "^7.4.1"
-  }
-}
-</file>
-
 <file path="prisma.config.ts">
 import { defineConfig } from '@prisma/config';
 
@@ -171,6 +591,131 @@ export default defineConfig({
 
 <file path="README.md">
 # SN-923-N
+</file>
+
+<file path="tsconfig.json">
+{
+  "compilerOptions": {
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx", ".next/types/**/*.ts", "prisma/client.d.ts"],
+  "exclude": ["node_modules"]
+}
+</file>
+
+<file path="vitest.config.ts">
+import { defineConfig } from 'vitest/config'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['./tests/helpers/prisma-mock.ts'],
+  },
+  resolve: {
+    alias: {
+      '@': '/src',
+    },
+  },
+})
+</file>
+
+<file path="prisma/schema.prisma">
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  //url      = env("DATABASE_URL")
+}
+
+// プロジェクト管理
+model Project {
+  id        Int      @id @default(autoincrement())
+  name      String
+  units     Unit[]   // Project -> Unit (1:N)
+  createdAt DateTime @default(now())
+}
+
+// ユニット（アセンブリ/子構成）
+model Unit {
+  id        Int      @id @default(autoincrement())
+  name      String   // 例: "メインフレーム", "駆動部", "外装ユニット"
+  projectId Int      @map("project_id")
+  project   Project  @relation(fields: [projectId], references: [id])
+  parts     Part[]   // Unit -> Part (1:N)
+  createdAt DateTime @default(now())
+}
+
+// STLファイル（設計）の管理
+model Part {
+  id          Int        @id @default(autoincrement())
+  partNumber  String     @map("part_number")
+  stlUrl      String     @map("stl_url")
+  unitId      Int        @map("unit_id") // ProjectIdの代わりにUnitIdを持つ
+  unit        Unit       @relation(fields: [unitId], references: [id])
+  items       PartItem[]
+  createdAt   DateTime   @default(now())
+}
+
+// 個々の製造部品と保管場所の管理
+model PartItem {
+  id           Int      @id @default(autoincrement())
+  partId       Int      @map("part_id")
+  part         Part     @relation(fields: [partId], references: [id])
+  boxId        Int?     @unique @map("box_id") // 1つの箱には1つのアイテム（一意性制約）
+  box          Box?     @relation(fields: [boxId], references: [id])
+  serialNumber String   @map("serial_number")
+  status       String   @default("PENDING") // PENDING, PRINTING, FINISHED, etc.
+  updatedAt    DateTime @updatedAt
+}
+
+// 物理的なボックス
+model Box {
+  id          Int       @id @default(autoincrement())
+  boxCode     String    @unique @map("box_code") // BOX-001など
+  isOccupied  Boolean   @default(false) @map("is_occupied")
+  partItem    PartItem?
+}
+</file>
+
+<file path="package.json">
+{
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.2",
+    "@prisma/client": "^7.4.1",
+    "@prisma/config": "^7.4.1"
+  },
+  "scripts": {
+    "test": "vitest",
+    "test:ui": "vitest --ui"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.1.4",
+    "@vitest/ui": "^4.0.18",
+    "jsdom": "^28.1.0",
+    "prisma": "^7.4.1",
+    "ts-node": "^10.9.2",
+    "vitest": "^4.0.18",
+    "vitest-mock-extended": "^3.1.0"
+  }
+}
 </file>
 
 </files>

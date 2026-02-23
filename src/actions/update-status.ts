@@ -1,21 +1,12 @@
+import prisma from '@/lib/db';
 import { PrismaClient } from '@prisma/client';
 
-// Prismaクライアントは遅延初期化する
-let prisma: PrismaClient | null = null;
-
-const getPrismaInstance = (): PrismaClient => {
-  if (!prisma) {
-    prisma = new PrismaClient();
-  }
-  return prisma;
-};
-
 export async function updatePartItemStatus(
-  partItemId: string,
+  partItemId: number,
   newStatus: string,
-  client?: PrismaClient
+  client?: PrismaClient // Remove this if not used for testing or specific transactions
 ) {
-  const dbClient = client || getPrismaInstance();
+  const dbClient = client || prisma; // Use shared prisma instance
 
   try {
     const updatedPartItem = await dbClient.$transaction(async (tx) => {
@@ -32,12 +23,8 @@ export async function updatePartItemStatus(
         data: { status: newStatus },
       });
 
-      await tx.statusHistory.create({
-        data: {
-          partItemId: partItemId,
-          status: newStatus,
-        },
-      });
+      // Removed statusHistory.create as StatusHistory model does not exist.
+
       return updated;
     });
     return updatedPartItem;
@@ -46,3 +33,4 @@ export async function updatePartItemStatus(
     throw error; // エラーを再スローして呼び出し元に伝える
   }
 }
+

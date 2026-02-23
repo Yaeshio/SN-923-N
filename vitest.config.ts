@@ -7,4 +7,9 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./tests/helpers/prisma-mock.ts'],
   },
+  resolve: {
+    alias: {
+      '@': '/src',
+    },
+  },
 })
